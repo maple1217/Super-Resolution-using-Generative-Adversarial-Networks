@@ -10,7 +10,7 @@ from keras.utils.data_utils import get_file
 from keras_ops import fit as bypass_fit, smooth_gan_labels
 
 from layers import Normalize, Denormalize, SubPixelUpscaling
-from loss import AdversarialLossRegularizer, ContentVGGRegularizer, TVRegularizer, psnr, dummy_loss
+from loss import AdversarialLossRegularizer, ContentVGGRegularizer, TVRegularizer, psnr, dummy_loss, content_loss, adversarial_loss, perceptual_loss
 
 import os
 import time
@@ -20,8 +20,10 @@ import json
 from scipy.misc import imresize, imsave
 from scipy.ndimage.filters import gaussian_filter
 
+'''
 THEANO_WEIGHTS_PATH_NO_TOP = r'https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_th_dim_ordering_th_kernels_notop.h5'
 TF_WEIGHTS_PATH_NO_TOP = r"https://github.com/fchollet/deep-learning-models/releases/download/v0.1/vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5"
+'''
 
 if not os.path.exists("weights/"):
     os.makedirs("weights/")
@@ -46,13 +48,13 @@ class VGGNetwork:
 
         self.vgg_layers = None
 
-    def append_vgg_network(self, x_in, true_X_input, pre_train=False):
+    def append_vgg_network(self, x_in, pre_train=False):
 
         # Append the initial inputs to the outputs of the SRResNet
-        x = merge([x_in, true_X_input], mode='concat', concat_axis=0)
+        #x = merge([x_in, true_X_input], mode='concat', concat_axis=0)
 
         # Normalize the inputs via custom VGG Normalization layer
-        x = Normalize(name="normalize_vgg")(x)
+        x = Normalize(name="normalize_vgg")(x_in)
 
         # Begin adding the VGG layers
         x = Convolution2D(64, 3, 3, activation='relu', name='vgg_conv1_1', border_mode='same')(x)
@@ -62,12 +64,16 @@ class VGGNetwork:
 
         x = Convolution2D(128, 3, 3, activation='relu', name='vgg_conv2_1', border_mode='same')(x)
 
+        """
         if pre_train:
             vgg_regularizer2 = ContentVGGRegularizer(weight=self.vgg_weight)
             x = Convolution2D(128, 3, 3, activation='relu', name='vgg_conv2_2', border_mode='same',
                               activity_regularizer=vgg_regularizer2)(x)
         else:
             x = Convolution2D(128, 3, 3, activation='relu', name='vgg_conv2_2', border_mode='same')(x)
+        """
+        x = Convolution2D(128, 3, 3, activation='relu', name='vgg_conv2_2', border_mode='same')(x)
+
         x = MaxPooling2D(name='vgg_maxpool2')(x)
 
         x = Convolution2D(256, 3, 3, activation='relu', name='vgg_conv3_1', border_mode='same')(x)
@@ -84,25 +90,31 @@ class VGGNetwork:
 
         x = Convolution2D(512, 3, 3, activation='relu', name='vgg_conv5_1', border_mode='same')(x)
         x = Convolution2D(512, 3, 3, activation='relu', name='vgg_conv5_2', border_mode='same')(x)
-
+        """
         if not pre_train:
             vgg_regularizer5 = ContentVGGRegularizer(weight=self.vgg_weight)
             x = Convolution2D(512, 3, 3, activation='relu', name='vgg_conv5_3', border_mode='same',
                           activity_regularizer=vgg_regularizer5)(x)
         else:
             x = Convolution2D(512, 3, 3, activation='relu', name='vgg_conv5_3', border_mode='same')(x)
-        x = MaxPooling2D(name='vgg_maxpool5')(x)
+        """
+        x = Convolution2D(512, 3, 3, activation='relu', name='vgg_conv5_3', border_mode='same')(x)
+        #x = MaxPooling2D(name='vgg_maxpool5')(x)
 
         return x
 
     def load_vgg_weight(self, model):
         # Loading VGG 16 weights
+        """
         if K.image_dim_ordering() == "th":
             weights = get_file('vgg16_weights_th_dim_ordering_th_kernels_notop.h5', THEANO_WEIGHTS_PATH_NO_TOP,
                                    cache_subdir='models')
         else:
             weights = get_file('vgg16_weights_tf_dim_ordering_tf_kernels_notop.h5', TF_WEIGHTS_PATH_NO_TOP,
                                    cache_subdir='models')
+        """
+        #zzf
+        weights = 'weights/vgg16_weights_th_dim_ordering_th_kernels_notop.h5'
         f = h5py.File(weights)
 
         layer_names = [name for name in f.attrs['layer_names']]
@@ -133,7 +145,7 @@ class DiscriminatorNetwork:
 
         self.k = 3
         self.mode = 2
-        self.weights_path = "weights/Discriminator weights.h5"
+        self.weights_path = "weights/Discriminator.h5"
 
         self.gan_layers = None
 
@@ -167,18 +179,25 @@ class DiscriminatorNetwork:
         x = Dense(output_dim, name='gan_dense1')(x)
         x = LeakyReLU(0.3, name='gan_lrelu5')(x)
 
-        gan_regulrizer = AdversarialLossRegularizer(weight=self.adversarial_loss_weight)
-        x = Dense(2, activation="softmax", activity_regularizer=gan_regulrizer, name='gan_output')(x)
+        #gan_regulrizer = AdversarialLossRegularizer(weight=self.adversarial_loss_weight)
+        #x = Dense(2, activation="softmax", activity_regularizer=gan_regulrizer, name='gan_output')(x)
+        x = Dense(2, activation="softmax", name='gan_output')(x)
 
         return x
 
     def set_trainable(self, model, value=True):
+        """
         if self.gan_layers is None:
             disc_model = [layer for layer in model.layers
                           if 'model' in layer.name][0] # Only disc model is an inner model
 
             self.gan_layers = [layer for layer in disc_model.layers
                                if 'gan_' in layer.name]
+        """
+
+        if self.gan_layers is None:
+            self.gan_layers = [layer for layer in model.layers
+                                    if 'gan_' in layer.name]
 
         for layer in self.gan_layers:
             layer.trainable = value
@@ -248,11 +267,14 @@ class GenerativeNetwork:
         for scale in range(self.nb_scales):
             x = self._upscale_block(x, scale + 1)
 
-        scale = 2 ** self.nb_scales
-        tv_regularizer = TVRegularizer(img_width=self.img_width * scale, img_height=self.img_height * scale,
-                                       weight=self.tv_weight) #self.tv_weight)
+        #scale = 2 ** self.nb_scales
+        #tv_regularizer = TVRegularizer(img_width=self.img_width * scale, img_height=self.img_height * scale,
+        #                               weight=self.tv_weight) #self.tv_weight)
 
-        x = Convolution2D(3, 5, 5, activation='tanh', border_mode='same', activity_regularizer=tv_regularizer,
+        #x = Convolution2D(3, 5, 5, activation='tanh', border_mode='same', activity_regularizer=tv_regularizer,
+        #                  init=self.init, name='sr_res_conv_final')(x)
+
+        x = Convolution2D(3, 5, 5, activation='tanh', border_mode='same',
                           init=self.init, name='sr_res_conv_final')(x)
 
         x = Denormalize(name='sr_res_conv_denorm')(x)
@@ -342,18 +364,28 @@ class SRGANNetwork:
         sr_output = self.generative_network.create_sr_model(ip)
         self.generative_model_ = Model(ip, sr_output)
 
-        vgg_output = self.vgg_network.append_vgg_network(sr_output, ip_vgg, pre_train=True)
+        vgg_output_orig = self.vgg_network.append_vgg_network(ip_vgg, pre_train=True)
+        self.vgg_model_ = Model(ip_vgg, vgg_output_orig)
 
+        #vgg_output = self.vgg_network.append_vgg_network(sr_output, ip_vgg, pre_train=True)
+        vgg_output = self.vgg_network.append_vgg_network(sr_output, pre_train=True)
+        """
         self.srgan_model_ = Model(input=[ip, ip_vgg],
+                                  output=vgg_output)
+        """
+        self.srgan_model_ = Model(input=ip,
                                   output=vgg_output)
 
         self.vgg_network.load_vgg_weight(self.srgan_model_)
+        self.vgg_network.load_vgg_weight(self.vgg_model_)
 
         srgan_optimizer = Adam(lr=1e-4)
         generator_optimizer = Adam(lr=1e-4)
 
         self.generative_model_.compile(generator_optimizer, dummy_loss)
-        self.srgan_model_.compile(srgan_optimizer, dummy_loss)
+        #self.srgan_model_.compile(srgan_optimizer, dummy_loss)
+        self.srgan_model_.compile(srgan_optimizer, content_loss)
+        self.vgg_model_.compile(srgan_optimizer, dummy_loss)
 
         return self.srgan_model_
 
@@ -387,10 +419,9 @@ class SRGANNetwork:
         discriminator_optimizer = Adam(lr=1e-4)
 
         self.generative_model_.compile(generator_optimizer, loss='mse')
-        self.discriminative_model_.compile(discriminator_optimizer, loss='categorical_crossentropy', metrics=['acc'])
+        #self.discriminative_model_.compile(discriminator_optimizer, loss='categorical_crossentropy', metrics=['acc'])
+        self.discriminative_model_.compile(discriminator_optimizer, loss=adversarial_loss, metrics=['acc'])
         self.srgan_model_.compile(srgan_optimizer, loss='categorical_crossentropy', metrics=['acc'])
-
-
 
         return self.discriminative_model_
 
@@ -409,18 +440,24 @@ class SRGANNetwork:
         ip_gan = Input(shape=(3, large_width, large_height), name='x_discriminator') # Actual X images
         ip_vgg = Input(shape=(3, large_width, large_height), name='x_vgg') # Actual X images
 
+        vgg_output_orig = self.vgg_network.append_vgg_network(ip_vgg, pre_train=True)
+        self.vgg_model_ = Model(ip_vgg, vgg_output_orig)
+
         sr_output = self.generative_network.create_sr_model(ip)
         self.generative_model_ = Model(ip, sr_output)
 
         gan_output = self.discriminative_network.append_gan_network(ip_gan)
         self.discriminative_model_ = Model(ip_gan, gan_output)
 
-        gan_output = self.discriminative_model_(self.generative_model_.output)
-        vgg_output = self.vgg_network.append_vgg_network(self.generative_model_.output, ip_vgg)
+        #gan_output = self.discriminative_model_(self.generative_model_.output)
+        #zzf
+        gan_output_new = self.discriminative_network.append_gan_network(self.generative_model_.output)
+        vgg_output = self.vgg_network.append_vgg_network(self.generative_model_.output)
 
-        self.srgan_model_ = Model(input=[ip, ip_gan, ip_vgg], output=[gan_output, vgg_output])
+        self.srgan_model_ = Model(input=[ip], output=[gan_output_new, vgg_output])
 
         self.vgg_network.load_vgg_weight(self.srgan_model_)
+        self.vgg_network.load_vgg_weight(self.vgg_model_)
 
         srgan_optimizer = Adam(lr=1e-4)
         generator_optimizer = Adam(lr=1e-4)
@@ -428,7 +465,8 @@ class SRGANNetwork:
 
         self.generative_model_.compile(generator_optimizer, dummy_loss)
         self.discriminative_model_.compile(discriminator_optimizer, loss='categorical_crossentropy', metrics=['acc'])
-        self.srgan_model_.compile(srgan_optimizer, dummy_loss)
+        self.srgan_model_.compile(srgan_optimizer, loss=[adversarial_loss, content_loss],loss_weights=[0.001, 1.])
+        self.vgg_model_.compile(srgan_optimizer, dummy_loss)
 
         return self.srgan_model_
 
@@ -583,10 +621,14 @@ class SRGANNetwork:
 
                     if pre_train_srgan:
                         # Train only generator + vgg network
+                        y_vgg_true = self.vgg_model_.predict(x * 255, self.batch_size)
 
                         # Use custom bypass_fit to bypass the check for same input and output batch size
-                        hist = bypass_fit(self.srgan_model_, [x_generator, x * 255], y_vgg_dummy,
+                        #hist = bypass_fit(self.srgan_model_, [x_generator], y_vgg_true,
+                        #                             batch_size=self.batch_size, nb_epoch=1, verbose=0)
+                        hist = self.srgan_model_.fit(x_generator, y_vgg_true,
                                                      batch_size=self.batch_size, nb_epoch=1, verbose=0)
+
                         sr_loss = hist.history['loss'][0]
 
                         if save_loss:
@@ -672,7 +714,7 @@ class SRGANNetwork:
                         y_gan = smooth_gan_labels(y_gan)
 
                         hist1 = self.discriminative_model_.fit(X, y_gan, verbose=0, batch_size=self.batch_size,
-                                                              nb_epoch=1)
+                                                               nb_epoch=1)
 
                         discriminator_loss = hist1.history['loss'][-1]
 
@@ -686,9 +728,13 @@ class SRGANNetwork:
                         y_model = to_categorical(y_model, nb_classes=2)
                         y_model = smooth_gan_labels(y_model)
 
+                        y_vgg_true = self.vgg_model_.predict(x * 255, self.batch_size)
+
                         # Use custom bypass_fit to bypass the check for same input and output batch size
-                        hist2 = bypass_fit(self.srgan_model_, [x_generator, x, x_vgg], [y_model, y_vgg_dummy],
-                                           batch_size=self.batch_size, nb_epoch=1, verbose=0)
+                        #hist2 = bypass_fit(self.srgan_model_, [x_generator], [y_model, y_vgg_true],
+                        #                   batch_size=self.batch_size, nb_epoch=1, verbose=0)
+                        hist2 = self.srgan_model_.fit(x_generator, [y_model, y_vgg_true],
+                                                      batch_size=self.batch_size, nb_epoch=1, verbose=0)
 
                         generative_loss = hist2.history['loss'][0]
 
@@ -709,8 +755,10 @@ class SRGANNetwork:
                               "Discriminator Loss : %0.3f | Generative Loss : %0.3f" %
                               (iteration, nb_images, improvement, t2 - t1, discriminator_loss, generative_loss))
 
-                    if iteration % 1000 == 0 and iteration != 0:
+                    if iteration % 10 == 0 and iteration != 0:
                         print("Saving model weights.")
+                        #self.discriminative_network.set_trainable(self.srgan_model_, value=True)
+                        #self.generative_network.set_trainable(self.srgan_model_, value=False)  
                         # Save predictive (SR network) weights
                         self._save_model_weights(pre_train_srgan, pre_train_discriminator)
                         self._save_loss_history(loss_history, pre_train_srgan, pre_train_discriminator, save_loss)
@@ -736,11 +784,13 @@ class SRGANNetwork:
     def _save_model_weights(self, pre_train_srgan, pre_train_discriminator):
         if not pre_train_discriminator:
             self.generative_model_.save_weights(self.generative_network.sr_weights_path, overwrite=True)
+            print("generator weight saved!")
 
-        if not pre_train_srgan:
+        #if not pre_train_srgan:
             # Save GAN (discriminative network) weights
-            self.discriminative_network.save_gan_weights(self.discriminative_model_)
-
+            #self.discriminative_network.save_gan_weights(self.discriminative_model_)
+            #print("discriminate!")
+            #self.discriminative_model_.save_weights(self.discriminative_network.weights_path, overwrite=True)
     def _save_loss_history(self, loss_history, pre_train_srgan, pre_train_discriminator, save_loss):
         if save_loss:
             print("Saving loss history")
@@ -759,10 +809,10 @@ class SRGANNetwork:
 
 
 if __name__ == "__main__":
-    from keras.utils.visualize_util import plot
+    #from keras.utils.visualize_util import plot
 
     # Path to MS COCO dataset
-    coco_path = r"D:\Yue\Documents\Dataset\coco2014\train2014"
+    coco_path = r"/home/lxc/Documents/SRGAN/ms_coco/"
 
     '''
     Base Network manager for the SRGAN model
@@ -774,25 +824,14 @@ if __name__ == "__main__":
     '''
 
     srgan_network = SRGANNetwork(img_width=32, img_height=32, batch_size=1)
-    srgan_network.build_srgan_model()
+    #srgan_network.build_srgan_model()
     #plot(srgan_network.srgan_model_, 'SRGAN.png', show_shapes=True)
 
     # Pretrain the SRGAN network
     #srgan_network.pre_train_srgan(coco_path, nb_images=80000, nb_epochs=1)
 
     # Pretrain the discriminator network
-    #srgan_network.pre_train_discriminator(coco_path, nb_images=40000, nb_epochs=1, batch_size=16)
+    #srgan_network.pre_train_discriminator(coco_path, nb_images=800, nb_epochs=1, batch_size=16)
 
     # Fully train the SRGAN with VGG loss and Discriminator loss
     srgan_network.train_full_model(coco_path, nb_images=80000, nb_epochs=5)
-
-
-
-
-
-
-
-
-
-
-
