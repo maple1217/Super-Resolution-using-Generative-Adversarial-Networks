@@ -6,6 +6,20 @@ dummy_loss_val = K.variable(0.0)
 
 softminus = lambda x: x - K.softplus(x)
 
+#add content loss function by maple
+def content_loss(y_true, y_pred):
+
+    loss = K.mean((K.square(y_true - y_pred)))
+    
+    return loss
+
+#add adversarial loss function by maple
+def adversarial_loss(y_true, y_pred):
+
+    loss = K.categorical_crossentropy(y_true, y_pred)
+    
+    return loss
+
 # Dummy loss function which simply returns 0
 # This is because we will be training the network using regularizers.
 def dummy_loss(y_true, y_pred):
